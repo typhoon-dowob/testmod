@@ -1,6 +1,6 @@
 name: Build Minecraft 1.20.1 Forge mod
 
-on:
+"on":
   workflow_dispatch:
   push:
 
@@ -11,61 +11,92 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      WOOLTEST_LOG_DIR: ${{ runner.temp }}/wooltest-ci-logs
     steps:
       - name: Download repository files
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Prepare diagnostic logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$WOOLTEST_LOG_DIR"
+          printf 'Commit: %s\nRun: %s\nAttempt: %s\n' \
+            "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            > "$WOOLTEST_LOG_DIR/environment.txt"
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Unpack source ZIP
+      - name: Locate or unpack mod project
         id: project
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f 'WoolTest-1.20.1-Forge-GitHub-Ready.zip' ]]; then
-            archive='WoolTest-1.20.1-Forge-GitHub-Ready.zip'
-          elif [[ -f 'WoolTest-1.20.1-Forge-v0.1.0-source.zip' ]]; then
-            archive='WoolTest-1.20.1-Forge-v0.1.0-source.zip'
-          else
-            echo '::error::Upload the WoolTest source ZIP to the repository root without renaming it.'
-            exit 1
-          fi
-          unzip -q "$archive" -d ci-source
-          dir='ci-source'
-          if [[ ! -f "$dir/build.gradle" ]]; then
-            dir="$dir/WoolTest-1.20.1-Forge"
-          fi
-          if [[ ! -f "$dir/build.gradle" || ! -f "$dir/tools/bootstrap.sh" ]]; then
-            echo '::error::Cannot find the mod project inside the ZIP.'
-            exit 1
-          fi
-          echo "dir=$dir" >> "$GITHUB_OUTPUT"
-          echo "Using project: $dir"
+          {
+            # Prefer the source ZIP so stale extracted files cannot mask an update.
+            archive=''
+            if [[ -f 'WoolTest-1.20.1-Forge-GitHub-Ready.zip' ]]; then
+              archive='WoolTest-1.20.1-Forge-GitHub-Ready.zip'
+            elif [[ -f 'WoolTest-1.20.1-Forge-v0.1.0-source.zip' ]]; then
+              archive='WoolTest-1.20.1-Forge-v0.1.0-source.zip'
+            fi
+            if [[ -n "$archive" ]]; then
+              sha256sum "$archive"
+              unpack_dir="$(mktemp -d "$RUNNER_TEMP/wooltest-source.XXXXXX")"
+              unzip -q "$archive" -d "$unpack_dir"
+              dir="$unpack_dir"
+              if [[ ! -f "$dir/build.gradle" ]]; then
+                dir="$unpack_dir/WoolTest-1.20.1-Forge"
+              fi
+            elif [[ -f 'build.gradle' ]]; then
+              dir="$GITHUB_WORKSPACE"
+            elif [[ -f 'WoolTest-1.20.1-Forge/build.gradle' ]]; then
+              dir="$GITHUB_WORKSPACE/WoolTest-1.20.1-Forge"
+            else
+              echo '::error::Cannot find the WoolTest source ZIP or extracted project.'
+              exit 1
+            fi
+            if [[ ! -f "$dir/build.gradle" || ! -f "$dir/tools/bootstrap.sh" ]]; then
+              echo '::error::The project must contain build.gradle and tools/bootstrap.sh.'
+              exit 1
+            fi
+            printf 'dir=%s\n' "$dir" >> "$GITHUB_OUTPUT"
+            printf 'Project: %s\n' "$dir"
+          } 2>&1 | tee "$WOOLTEST_LOG_DIR/unpack-log.txt"
 
       - name: Build mod JAR
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
-          bash tools/bootstrap.sh 2>&1 | tee "$GITHUB_WORKSPACE/build-log.txt"
-          chmod +x gradlew
-          ./gradlew --no-daemon --console=plain --stacktrace clean build 2>&1 | tee -a "$GITHUB_WORKSPACE/build-log.txt"
+          # Keep the real failure code while saving both stdout and stderr.
+          (
+            set -euo pipefail
+            java -version
+            javac -version
+            bash tools/bootstrap.sh
+            chmod +x gradlew
+            ./gradlew --no-daemon --console=plain --stacktrace clean build
+          ) 2>&1 | tee "$WOOLTEST_LOG_DIR/build-log.txt"
 
       - name: Upload mod JAR
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wooltest-minecraft-1.20.1-forge
           path: ${{ steps.project.outputs.dir }}/build/libs/wooltest-1.20.1-0.1.0.jar
           if-no-files-found: error
 
-      - name: Upload build log
+      - name: Upload diagnostic logs
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wooltest-build-log
-          path: build-log.txt
+          path: ${{ runner.temp }}/wooltest-ci-logs/
           if-no-files-found: ignore
