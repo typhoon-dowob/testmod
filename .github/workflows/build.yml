@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      WOOLTEST_LOG_DIR: ${{ runner.temp }}/wooltest-ci-logs
+      WOOLTEST_LOG_DIR: ${{ github.workspace }}/wooltest-ci-logs
     steps:
       - name: Download repository files
         uses: actions/checkout@v5
@@ -98,5 +98,5 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: wooltest-build-log
-          path: ${{ runner.temp }}/wooltest-ci-logs/
+          path: ${{ env.WOOLTEST_LOG_DIR }}/
           if-no-files-found: ignore
